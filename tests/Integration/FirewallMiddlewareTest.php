@@ -1,0 +1,408 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Ganadev\Shield\Laravel\Tests\Integration;
+
+use Ganadev\Shield\Core\Reputation\BanStatus;
+use Ganadev\Shield\Laravel\Events\ShieldBlocked;
+use Ganadev\Shield\Laravel\Models\SecurityEvent;
+use Ganadev\Shield\Laravel\Models\SecurityIpBan;
+use Illuminate\Support\Facades\Event;
+
+it('lets a normal route through untouched', function () {
+    $this->get('/home')->assertOk()->assertSee('home');
+});
+
+it('blocks a sensitive .env probe before the controller runs', function () {
+    $this->get('/.env')->assertStatus(404)->assertHeader('X-Shield-Blocked', 'sensitive.env');
+});
+
+it('records a security event for the block', function () {
+    $this->get('/.env')->assertStatus(404);
+
+    $event = SecurityEvent::query()->latest('id')->first();
+    expect($event)->not->toBeNull();
+    expect($event->rule_id)->toBe('sensitive.env');
+    expect($event->decision)->toBe('BLOCK_REQUEST');
+});
+
+it('dispatches a ShieldBlocked event on block', function () {
+    Event::fake([ShieldBlocked::class]);
+
+    $this->get('/.env')->assertStatus(404);
+
+    Event::assertDispatched(ShieldBlocked::class);
+});
+
+it('masks sensitive query parameters in the dispatched event payload', function () {
+    Event::fake([ShieldBlocked::class]);
+
+    $this->get('/?file=/root/.aws/credentials&api_token=SECRET123&page=2')
+        ->assertStatus(404);
+
+    Event::assertDispatched(ShieldBlocked::class, function (ShieldBlocked $event): bool {
+        // suffix _token ikut termasking, param non-sensitif tetap utuh
+        expect($event->uri)->toContain('api_token=***');
+        expect($event->uri)->toContain('file=/root/.aws/credentials');
+        expect($event->uri)->toContain('page=2');
+        expect($event->uri)->not->toContain('SECRET123');
+
+        return true;
+    });
+});
+
+it('blocks query string exploits too', function () {
+    $this->get('/?file=/root/.aws/credentials')->assertStatus(404);
+});
+
+it('detects double encoded traversal', function () {
+    $this->get('/%252e%252e/%252e%252e/etc/passwd')->assertStatus(404);
+});
+
+it('blocks RCE probe php://input', function () {
+    $this->get('/cgi-bin/php?x=php://input')->assertStatus(404);
+});
+
+it('persists an active ban in the database', function () {
+    $this->get('/.env')->assertStatus(404);
+
+    $ban = SecurityIpBan::query()->first();
+    expect($ban)->not->toBeNull();
+    expect($ban->status)->toBe(BanStatus::Active->value);
+    expect($ban->offense_count)->toBe(1);
+    expect($ban->expires_at)->not->toBeNull();
+});
+
+it('challenges a banned ip hitting a normal route', function () {
+    SecurityIpBan::query()->create([
+        'ip_address' => '10.0.0.5',
+        'status' => BanStatus::Active->value,
+        'reason' => 'test ban',
+        'risk_score' => 25,
+        'offense_count' => 1,
+        'banned_at' => now(),
+        'expires_at' => now()->addHour(),
+        'last_seen_at' => now(),
+    ]);
+
+    $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.5'])
+        ->get('/home')
+        ->assertRedirect(route('shield.challenge', ['redirect' => '/home']));
+});
+
+it('redirects back to the challenged path after a successful verify', function () {
+    SecurityIpBan::query()->create([
+        'ip_address' => '10.0.0.8',
+        'status' => BanStatus::Active->value,
+        'reason' => 'test ban',
+        'risk_score' => 25,
+        'offense_count' => 1,
+        'banned_at' => now(),
+        'expires_at' => now()->addHour(),
+        'last_seen_at' => now(),
+    ]);
+
+    // 1. Banned IP hits /home -> redirected to challenge with a RELATIVE redirect.
+    $challenge = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.8'])
+        ->get('/home')
+        ->assertRedirect()
+        ->headers->get('Location');
+
+    expect($challenge)->toContain('/shield/challenge?redirect='.urlencode('/home'));
+
+    // 2. Challenge page renders a real CSRF token.
+    $html = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.8'])
+        ->get('/shield/challenge?redirect=/home')
+        ->assertOk()
+        ->getContent();
+
+    preg_match('/name="_token" value="([^"]+)"/', $html, $matches);
+    $token = $matches[1] ?? '';
+
+    expect($token)->not->toBeEmpty('challenge page must render a real CSRF token');
+
+    // 3. Verifying sends the user back to /home, not to the root path.
+    $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.8'])
+        ->withSession(['_token' => $token])
+        ->post('/shield/challenge/verify', [
+            '_token' => $token,
+            'shield_challenge_token' => 'test-token',
+            'redirect' => '/home',
+        ])->assertRedirect('/home');
+});
+
+it('renders the challenge page with an active session', function () {
+    $html = $this->get('/shield/challenge?redirect=/home')
+        ->assertOk()
+        ->getContent();
+
+    expect($html)->toContain('shield-form');
+    expect($html)->toContain('name="shield_challenge_token"');
+    expect($html)->toContain('<button type="submit">Verify</button>');
+    expect($html)->toContain('function onChallengeSolved');
+});
+
+it('renders a turnstile challenge with the auto-submit wiring', function () {
+    config()->set('shield.challenge.driver', 'turnstile');
+
+    $html = $this->get('/shield/challenge')
+        ->assertOk()
+        ->getContent();
+
+    expect($html)->toContain('cf-turnstile');
+    expect($html)->toContain('data-callback="onChallengeSolved"');
+    expect($html)->toContain('function onChallengeSolved');
+});
+
+it('shows a verification error alert on the challenge page', function () {
+    $html = $this->get('/shield/challenge?error=1')->assertOk()->getContent();
+
+    expect($html)->toContain('Verification failed');
+});
+
+it('renders the blocked page as branded html', function () {
+    $response = $this->get('/.env')->assertStatus(404);
+    $response->assertHeader('X-Shield-Blocked', 'sensitive.env');
+
+    $html = $response->getContent();
+    expect($html)->toContain('Access Blocked');
+    expect($html)->toContain('sensitive.env');
+    expect($html)->toContain('Ganadev Laravel Shield');
+});
+
+it('hides the rule id on the blocked page when branding.show_rule_id is false', function () {
+    config()->set('shield.branding.show_rule_id', false);
+
+    $html = $this->get('/.env')->assertStatus(404)->getContent();
+
+    expect($html)->not->toContain('sensitive.env');
+    expect($html)->toContain('Access Blocked');
+});
+
+it('challenge success releases the ban and issues a trusted cookie', function () {
+    SecurityIpBan::query()->create([
+        'ip_address' => '10.0.0.5',
+        'status' => BanStatus::Active->value,
+        'reason' => 'test ban',
+        'risk_score' => 25,
+        'offense_count' => 1,
+        'banned_at' => now(),
+        'expires_at' => now()->addHour(),
+        'last_seen_at' => now(),
+    ]);
+
+    $token = 'csrf-token';
+    $response = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.5'])
+        ->withSession(['_token' => $token])
+        ->post('/shield/challenge/verify', [
+            '_token' => $token,
+            'shield_challenge_token' => 'test-token',
+            'redirect' => '/home',
+        ]);
+
+    $response->assertRedirect('/home');
+    $response->assertCookie('shield_trusted');
+
+    $ban = SecurityIpBan::query()->where('ip_address', '10.0.0.5')->first();
+    expect($ban->status)->toBe(BanStatus::Released->value);
+    expect($ban->challenge_passed_at)->not->toBeNull();
+});
+
+it('completes the full challenge flow like a browser', function () {
+    SecurityIpBan::query()->create([
+        'ip_address' => '10.0.0.7',
+        'status' => BanStatus::Active->value,
+        'reason' => 'test ban',
+        'risk_score' => 25,
+        'offense_count' => 1,
+        'banned_at' => now(),
+        'expires_at' => now()->addHour(),
+        'last_seen_at' => now(),
+    ]);
+
+    $html = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.7'])
+        ->get('/shield/challenge')
+        ->assertOk()
+        ->getContent();
+
+    preg_match('/name="_token" value="([^"]+)"/', $html, $matches);
+    $token = $matches[1] ?? '';
+
+    expect($token)->not->toBeEmpty('challenge page must render a real CSRF token');
+
+    $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.7'])
+        ->withSession(['_token' => $token])
+        ->post('/shield/challenge/verify', [
+            '_token' => $token,
+            'shield_challenge_token' => 'test-token',
+            'redirect' => '/home',
+        ])->assertRedirect('/home');
+
+    $ban = SecurityIpBan::query()->where('ip_address', '10.0.0.7')->first();
+    expect($ban->status)->toBe(BanStatus::Released->value);
+});
+
+it('critical signature still blocks a banned ip that passed the challenge', function () {
+    SecurityIpBan::query()->create([
+        'ip_address' => '10.0.0.5',
+        'status' => BanStatus::Released->value,
+        'reason' => 'challenge passed',
+        'risk_score' => 25,
+        'offense_count' => 1,
+        'banned_at' => now()->subHour(),
+        'expires_at' => now()->subMinute(),
+        'released_at' => now()->subMinute(),
+        'challenge_passed_at' => now()->subMinute(),
+        'last_seen_at' => now()->subMinute(),
+    ]);
+
+    $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.5'])
+        ->get('/.env')
+        ->assertStatus(404);
+});
+
+it('keeps normal traffic clean and never bans legitimate requests', function () {
+    for ($i = 0; $i < 20; $i++) {
+        $this->get("/home?p={$i}")->assertOk();
+    }
+
+    expect(SecurityIpBan::query()->count())->toBe(0);
+});
+
+it('admin routes are not exposed when disabled', function () {
+    $this->get('/shield/bans')->assertNotFound();
+});
+
+it('challenges repeated login attempts on a sensitive path', function () {
+    for ($i = 0; $i < 7; $i++) {
+        $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.6'])
+            ->post('/login', ['username' => 'x', 'password' => 'y'])
+            ->assertStatus(404);
+    }
+
+    $response = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.6'])
+        ->post('/login', ['username' => 'x', 'password' => 'y']);
+
+    $response->assertRedirect();
+    expect((string) $response->headers->get('Location'))->toContain('/shield/challenge');
+});
+
+it('blocks SQL injection payloads in a form request body', function () {
+    $this->call('POST', '/login', [], [], [], ['CONTENT_TYPE' => 'application/x-www-form-urlencoded'], "username=admin'+UNION+SELECT+password+FROM+users--&password=x")
+        ->assertStatus(404)
+        ->assertHeader('X-Shield-Blocked', 'payload.sqli.union');
+});
+
+it('blocks SQL injection payloads in a JSON request body', function () {
+    $this->postJson('/api/login', ['username' => "admin' UNION SELECT password FROM users--", 'password' => 'x'])
+        ->assertStatus(404)
+        ->assertHeader('X-Shield-Blocked', 'payload.sqli.union');
+});
+
+it('does not inspect bodies when body inspection is disabled', function () {
+    config()->set('shield.inspection.body.enabled', false);
+
+    $this->call('POST', '/login', [], [], [], ['CONTENT_TYPE' => 'application/x-www-form-urlencoded'], "username=admin'+UNION+SELECT+password+FROM+users--")
+        ->assertStatus(404);
+});
+
+it('lets a verified crawler pass in challenge mode', function () {
+    config()->set('shield.bots.verification.ip_ranges.googlebot', ['127.0.0.0/8']);
+
+    $this->get('/home', ['User-Agent' => 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'])
+        ->assertOk()
+        ->assertSee('home');
+});
+
+it('challenges an unverified crawler claim in challenge mode', function () {
+    $response = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.9'])
+        ->get('/home', ['User-Agent' => 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)']);
+
+    $response->assertRedirect();
+    expect((string) $response->headers->get('Location'))->toContain('/shield/challenge');
+});
+
+it('still blocks a critical signature from a verified crawler', function () {
+    config()->set('shield.bots.verification.ip_ranges.googlebot', ['127.0.0.0/8']);
+
+    $this->get('/.env', ['User-Agent' => 'Mozilla/5.0 (compatible; Googlebot/2.1)'])
+        ->assertStatus(404)
+        ->assertHeader('X-Shield-Blocked', 'sensitive.env');
+});
+
+it('lets a verified crawler crawl aggressively without being challenged', function () {
+    config()->set('shield.bots.verification.ip_ranges.googlebot', ['127.0.0.0/8']);
+
+    for ($i = 0; $i < 40; $i++) {
+        $this->withServerVariables(['REMOTE_ADDR' => '127.0.0.1'])
+            ->get("/blog/post-{$i}", ['User-Agent' => 'Mozilla/5.0 (compatible; Googlebot/2.1)'])
+            ->assertNotFound()
+            ->assertHeaderMissing('X-Shield-Blocked');
+    }
+
+    expect(SecurityIpBan::query()->count())->toBe(0);
+});
+
+it('still allows normal users without any crawler handling', function () {
+    $this->get('/home', ['User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36'])
+        ->assertOk()
+        ->assertSee('home');
+});
+
+it('wordpress rule pack is off by default', function () {
+    config()->set('shield.rules.packs.wordpress', false);
+
+    $this->get('/wp-json/gravitysmtp/v1/tests/mock-data')
+        ->assertHeaderMissing('X-Shield-Blocked');
+});
+
+it('wordpress rule pack blocks plugin probes when enabled', function () {
+    config()->set('shield.rules.packs.wordpress', true);
+
+    $this->get('/wp-json/gravitysmtp/v1/tests/mock-data')
+        ->assertStatus(404)
+        ->assertHeader('X-Shield-Blocked', 'wp.gravitysmtp');
+});
+
+it('rejects an invalid challenge token', function () {
+    $token = 'csrf-token';
+    $this->withSession(['_token' => $token])
+        ->post('/shield/challenge/verify', [
+            '_token' => $token,
+            'shield_challenge_token' => 'wrong',
+            'redirect' => '/home',
+        ])->assertRedirect(route('shield.challenge', ['error' => 1]));
+});
+
+it('never redirects to external hosts from the challenge flow', function () {
+    $token = 'csrf-token';
+
+    foreach ([
+        'https://evil.example/phish',
+        '//evil.example/phish',
+        '/\\/evil.example/phish',
+        '/\\evil.example/phish',
+        '/%5c%5cevil.example/phish',
+        'javascript:alert(1)',
+        '/\\http:evil.example',
+    ] as $redirect) {
+        $this->withSession(['_token' => $token])
+            ->post('/shield/challenge/verify', [
+                '_token' => $token,
+                'shield_challenge_token' => 'test-token',
+                'redirect' => $redirect,
+            ])->assertRedirect('/');
+    }
+});
+
+it('still allows same-origin relative redirects', function () {
+    $token = 'csrf-token';
+
+    $this->withSession(['_token' => $token])
+        ->post('/shield/challenge/verify', [
+            '_token' => $token,
+            'shield_challenge_token' => 'test-token',
+            'redirect' => '/home?from=challenge',
+        ])->assertRedirect('/home?from=challenge');
+});

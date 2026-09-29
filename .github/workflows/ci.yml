@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, intl, sqlite, dom, xml
+          coverage: xdebug
+          tools: composer:v2
+
+      - name: Install dependencies
+        # ganadev/shield-core diambil dari Packagist (rilis shield-core v1.0.0 lebih dulu).
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Composer validate
+        run: composer validate --strict --no-check-publish
+
+      - name: Lint (Pint)
+        run: composer format-test
+
+      - name: Static analysis (PHPStan)
+        run: composer analyse
+
+      - name: Run tests (Pest)
+        run: composer test
+
+      - name: Coverage (gate >= 50%)
+        run: |
+          mkdir -p build
+          vendor/bin/pest --configuration phpunit.coverage-laravel.xml.dist --coverage --coverage-text=build/coverage-laravel.txt
+          php tools/check-coverage.php build/coverage-laravel.txt 50
+
+      - name: Dependency audit
+        run: composer audit --locked
+
+  e2e:
+    name: E2E smoke (real HTTP, PHP 8.4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout shield-core sibling (untuk contoh aplikasi)
+        uses: actions/checkout@v4
+        with:
+          repository: GanaDev-Com/shield-core
+          path: ../shield-core
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, intl, sqlite, dom, xml
+          tools: composer:v2
+
+      - name: Install demo dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+        working-directory: examples/laravel-demo
+
+      - name: Run E2E smoke test
+        run: bash tools/e2e-smoke.sh
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Gitleaks scan
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@latest
+          mkdir -p build
+          "$(go env GOPATH)/bin/gitleaks" detect --source . --no-banner --config .gitleaks.toml --report-format json --report-path build/gitleaks.json
