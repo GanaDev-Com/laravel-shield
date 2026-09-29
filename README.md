@@ -55,13 +55,17 @@ composer install
 composer test        # Pest (Testbench + SQLite in-memory)
 composer analyse     # PHPStan + Larastan
 composer format-test # Pint
-bash tools/e2e-smoke.sh   # E2E HTTP nyata terhadap examples/laravel-demo
 ```
+
+> Di CI, `ganadev/shield-core` diambil dari sibling checkout (path repo via `composer config`), sehingga tidak
+> perlu menunggu rilis ke Packagist.
 
 ## Contoh aplikasi
 
-Lihat [`examples/laravel-demo`](examples/laravel-demo) — aplikasi Laravel siap pakai untuk mencoba package
-(path repository ke laravel-shield & sibling shield-core).
+Lihat [`examples/laravel-demo`](examples/laravel-demo) — aplikasi Laravel untuk mencoba package **setelah
+keduanya terbit di Packagist** (`composer require` dari Packagist). Untuk uji manual pre-release gunakan repo
+`laravel-test` atau clone kedua package sebagai sibling dan atur path repository. E2E HTTP nyata dapat dijalankan
+lokal dengan `bash tools/e2e-smoke.sh`.
 
 ## Lisensi
 

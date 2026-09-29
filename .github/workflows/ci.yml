@@ -63,32 +63,6 @@ jobs:
       - name: Dependency audit
         run: composer audit --locked
 
-  e2e:
-    name: E2E smoke (real HTTP, PHP 8.4)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout shield-core sibling (untuk contoh aplikasi)
-        uses: actions/checkout@v4
-        with:
-          repository: GanaDev-Com/shield-core
-          path: shield-core
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.4'
-          extensions: mbstring, intl, sqlite, dom, xml
-          tools: composer:v2
-
-      - name: Install demo dependencies
-        run: composer install --no-interaction --prefer-dist --no-progress
-        working-directory: examples/laravel-demo
-
-      - name: Run E2E smoke test
-        run: bash tools/e2e-smoke.sh
-
   secrets:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest

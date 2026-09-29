@@ -3,7 +3,9 @@
 /.phpunit.cache/
 /.phpstan/
 /composer.lock
+/shield-core/
 /examples/laravel-demo/vendor/
 /examples/laravel-demo/node_modules/
 /examples/laravel-demo/.env
 /examples/laravel-demo/database/database.sqlite
+/examples/laravel-demo/composer.lock
