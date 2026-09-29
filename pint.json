@@ -5,6 +5,7 @@
         "no_unused_imports": true
     },
     "exclude": [
-        "examples/laravel-demo"
+        "examples/laravel-demo",
+        "shield-core"
     ]
 }

@@ -17,6 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout shield-core sibling (untuk dev/CI)
+        uses: actions/checkout@v4
+        with:
+          repository: GanaDev-Com/shield-core
+          path: shield-core
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -25,12 +31,19 @@ jobs:
           coverage: xdebug
           tools: composer:v2
 
-      - name: Install dependencies
-        # ganadev/shield-core diambil dari Packagist (rilis shield-core v1.0.0 lebih dulu).
-        run: composer install --no-interaction --prefer-dist --no-progress
-
       - name: Composer validate
         run: composer validate --strict --no-check-publish
+
+      - name: Pin shield-core version (path repo sibling)
+        working-directory: shield-core
+        run: composer config version 1.0.0
+
+      - name: Point shield-core to sibling checkout
+        run: composer config repositories.local-shield-core path shield-core
+
+      - name: Install dependencies
+        # shield-core diambil dari sibling checkout (path repo) — tidak perlu menunggu Packagist.
+        run: composer install --no-interaction --prefer-dist --no-progress
 
       - name: Lint (Pint)
         run: composer format-test
@@ -60,7 +73,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: GanaDev-Com/shield-core
-          path: ../shield-core
+          path: shield-core
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
