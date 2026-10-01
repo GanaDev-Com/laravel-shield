@@ -54,7 +54,7 @@ return [
     ],
 
     'bots' => [
-        'mode' => env('SHIELD_BOT_MODE', 'challenge'),
+        'mode' => env('SHIELD_BOT_MODE', 'observe'),
         'unverified_claim_signal' => (int) env('SHIELD_BOT_UNVERIFIED_CLAIM_SIGNAL', 4),
         'verification' => [
             'enabled' => (bool) env('SHIELD_BOT_VERIFICATION_ENABLED', true),

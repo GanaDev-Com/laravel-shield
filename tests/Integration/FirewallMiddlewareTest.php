@@ -9,6 +9,7 @@ use Ganadev\Shield\Laravel\Events\ShieldBlocked;
 use Ganadev\Shield\Laravel\Models\SecurityEvent;
 use Ganadev\Shield\Laravel\Models\SecurityIpBan;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Route;
 
 it('lets a normal route through untouched', function () {
     $this->get('/home')->assertOk()->assertSee('home');
@@ -274,6 +275,33 @@ it('admin routes are not exposed when disabled', function () {
     $this->get('/shield/bans')->assertNotFound();
 });
 
+it('does not scan admin routes when the admin prefix is customised', function () {
+    config()->set('shield.admin.prefix', 'ops-shield');
+
+    Route::middleware('web')->prefix('ops-shield')->group(function () {
+        Route::get('/bans', fn () => 'admin bans')->name('ops-shield.bans');
+    });
+
+    // Would be blocked as an AWS credential probe if the firewall scanned it.
+    $this->get('/ops-shield/bans?file=/root/.aws/credentials')
+        ->assertOk()
+        ->assertSee('admin bans')
+        ->assertHeaderMissing('X-Shield-Blocked');
+});
+
+it('still scans application routes when the admin prefix is customised', function () {
+    config()->set('shield.admin.prefix', 'ops-shield');
+
+    $this->get('/home?file=/root/.aws/credentials')
+        ->assertStatus(404)
+        ->assertHeader('X-Shield-Blocked');
+});
+
+it('does not scan the default shield prefix when the admin prefix is the default', function () {
+    $this->get('/shield/bans?file=/root/.aws/credentials')
+        ->assertHeaderMissing('X-Shield-Blocked');
+});
+
 it('challenges repeated login attempts on a sensitive path', function () {
     for ($i = 0; $i < 7; $i++) {
         $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.6'])
@@ -308,6 +336,7 @@ it('does not inspect bodies when body inspection is disabled', function () {
 });
 
 it('lets a verified crawler pass in challenge mode', function () {
+    config()->set('shield.bots.mode', 'challenge');
     config()->set('shield.bots.verification.ip_ranges.googlebot', ['127.0.0.0/8']);
 
     $this->get('/home', ['User-Agent' => 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'])
@@ -316,11 +345,20 @@ it('lets a verified crawler pass in challenge mode', function () {
 });
 
 it('challenges an unverified crawler claim in challenge mode', function () {
+    config()->set('shield.bots.mode', 'challenge');
+
     $response = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.9'])
         ->get('/home', ['User-Agent' => 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)']);
 
     $response->assertRedirect();
     expect((string) $response->headers->get('Location'))->toContain('/shield/challenge');
+});
+
+it('serves an unverified crawler with the default bot mode', function () {
+    $response = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.9'])
+        ->get('/home', ['User-Agent' => 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)']);
+
+    $response->assertOk()->assertSee('home');
 });
 
 it('still blocks a critical signature from a verified crawler', function () {

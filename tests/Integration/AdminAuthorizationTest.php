@@ -91,3 +91,38 @@ it('does not warn about trusted proxies when no forwarded headers are present', 
 
     expect($data['trusted_proxy_warning'])->toBeNull();
 });
+
+it('warns when the admin panel is enabled without an authorize gate', function () {
+    config()->set('shield.admin.enabled', true);
+    config()->set('shield.admin.authorize', '');
+
+    $request = Request::create('/shield/health', 'GET');
+
+    $data = json_decode(app(AdminController::class)->health($request)->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+    expect($data['admin_authorize_warning'])->not->toBeNull();
+});
+
+it('does not warn about admin authorization when a gate is configured', function () {
+    config()->set('shield.admin.enabled', true);
+    config()->set('shield.admin.authorize', 'shield.manage');
+    Gate::define('shield.manage', fn () => true);
+
+    $request = Request::create('/shield/health', 'GET');
+    $request->setUserResolver(fn () => adminUser());
+
+    $data = json_decode(app(AdminController::class)->health($request)->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+    expect($data['admin_authorize_warning'])->toBeNull();
+});
+
+it('does not warn about admin authorization when the panel is disabled', function () {
+    config()->set('shield.admin.enabled', false);
+    config()->set('shield.admin.authorize', '');
+
+    $request = Request::create('/shield/health', 'GET');
+
+    $data = json_decode(app(AdminController::class)->health($request)->getContent(), true, 512, JSON_THROW_ON_ERROR);
+
+    expect($data['admin_authorize_warning'])->toBeNull();
+});

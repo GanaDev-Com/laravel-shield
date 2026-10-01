@@ -33,6 +33,12 @@ final class SecurityFirewallMiddleware
         private readonly LaravelCacheAdapter $cache,
         private readonly UrlGenerator $url,
         private readonly ViewFactory $views,
+        /**
+         * Admin routes must never be scanned by the firewall that protects them:
+         * a blocked admin request would be undebuggable and would lock an
+         * operator out of the very panel used to lift a ban.
+         */
+        private readonly string $adminPrefix = 'shield',
     ) {}
 
     public function handle(Request $request, Closure $next): SymfonyResponse
@@ -236,6 +242,25 @@ final class SecurityFirewallMiddleware
     {
         $path = $request->path();
 
-        return str_starts_with($path, 'shield/') || $path === 'shield';
+        foreach ($this->shieldRoutePrefixes() as $prefix) {
+            if ($path === $prefix || str_starts_with($path, $prefix.'/')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The challenge route is always mounted at `/shield/challenge`, while the
+     * admin panel honours `shield.admin.prefix`, so both are exempted.
+     *
+     * @return list<string>
+     */
+    private function shieldRoutePrefixes(): array
+    {
+        return array_values(array_unique(array_filter(
+            ['shield', trim($this->adminPrefix, '/')],
+        )));
     }
 }

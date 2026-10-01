@@ -40,8 +40,10 @@ final class LaravelCacheAdapter implements CacheAdapterInterface
     {
         $fullKey = $this->key($key);
 
-        if (! $this->cache->has($fullKey)) {
-            $this->cache->put($fullKey, 0, $ttlSeconds);
+        // Seed with 1, not 0: the stored value must already reflect the increment we
+        // are about to report, otherwise the next call re-reports the same count.
+        if ($this->cache->add($fullKey, 1, $ttlSeconds)) {
+            return 1;
         }
 
         return (int) $this->cache->increment($fullKey, 1);

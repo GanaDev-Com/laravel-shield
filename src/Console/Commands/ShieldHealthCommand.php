@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ganadev\Shield\Laravel\Console\Commands;
 
+use Ganadev\Shield\Laravel\Support\TrustedProxyInspector;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Database\DatabaseManager;
@@ -58,23 +59,56 @@ final class ShieldHealthCommand extends Command
     }
 
     /**
+     * Status label plus the warning shown under the table.
+     *
+     * The dangerous combination is "forwarded headers arrive but nothing is
+     * trusted": every client then shares the proxy IP, which defeats IP-based
+     * rate limiting and bans. That must be detected even when no forwarded
+     * header happens to be present in the current CLI environment, so the
+     * configured proxies are read from TrustProxies rather than $_SERVER only.
+     *
      * @return array{0: string, 1: string|null}
      */
     private function proxyStatus(): array
     {
-        $forwarded = ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '') !== ''
-            || ($_SERVER['HTTP_FORWARDED'] ?? '') !== '';
-
-        if (! $forwarded) {
-            return ['tidak terdeteksi', null];
-        }
-
+        $forwarded = TrustedProxyInspector::forwardedHeaderSeen($_SERVER);
+        $proxies = TrustedProxyInspector::configuredProxies();
         $trusted = Request::getTrustedProxies();
+        $requestTrusted = $trusted !== [];
 
-        if ($trusted === []) {
-            return ['terdeteksi', 'header forwarded ditemukan tetapi trusted proxies belum dikonfigurasi.'];
+        if ($proxies !== null) {
+            $status = $proxies === ['*'] ? 'ok (trust semua proxy)' : 'ok';
+            $warning = null;
+            if (! $forwarded && ! $requestTrusted) {
+                $warning = 'trusted proxies dikonfigurasi tetapi belum ada request dengan header forwarded.';
+            }
+
+            return [$status, $warning];
         }
 
-        return ['ok', null];
+        if ($requestTrusted) {
+            return ['ok (hanya pada request ini)', null];
+        }
+
+        if ($forwarded) {
+            return [
+                'header forwarded, trusted proxies kosong',
+                'header forwarded ditemukan tetapi trusted proxies belum dikonfigurasi. '
+                .'Semua klien akan terlihat sebagai IP proxy sehingga rate limit per-IP dan ban tidak efektif.',
+            ];
+        }
+
+        $appUrl = (string) config('app.url', '');
+
+        if (TrustedProxyInspector::looksDeployedBehindProxy($appUrl)) {
+            return [
+                'tidak dikonfigurasi (app publik)',
+                ' aplikasi berjalan pada host publik ('.$appUrl.') tetapi trusted proxies belum dikonfigurasi. '
+                .'Jika ada reverse proxy/Cloudflare di depan aplikasi, konfigurasikan TrustProxies::at() '
+                .'agar IP klien asli terbaca.',
+            ];
+        }
+
+        return ['tidak terdeteksi', null];
     }
 }

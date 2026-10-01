@@ -161,12 +161,18 @@ final class AdminController
             $proxyWarning = 'Forwarded headers present but trusted proxies are not configured.';
         }
 
+        $adminWarning = null;
+        if ((bool) config('shield.admin.enabled', false) && $this->config->adminAuthorize === '') {
+            $adminWarning = 'Admin panel is enabled but admin.authorize is empty: any authenticated user can manage bans.';
+        }
+
         return $this->response->json([
             'healthy' => $dbOk && $cacheOk,
             'database' => $dbOk,
             'cache' => $cacheOk,
             'engine' => true,
             'trusted_proxy_warning' => $proxyWarning,
+            'admin_authorize_warning' => $adminWarning,
             'error' => $exception?->getMessage(),
         ], $dbOk && $cacheOk ? 200 : 503);
     }

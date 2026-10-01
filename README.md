@@ -36,10 +36,27 @@ Daftarkan middleware global di `bootstrap/app.php`:
 Mulai dengan mode `observe` (default), lalu naikkan ke `enforce` setelah memantau `shield:report`.
 Dokumentasi lengkap: `config/shield.php` berisi semua opsi beserta komentar.
 
+Behind a reverse proxy (Nginx, Cloudflare, Load Balancer)? Daftarkan proxy-nya, kalau tidak
+semua klien terlihat sebagai satu IP proxy dan rate limit per-IP serta ban jadi tidak
+berguna. Di Laravel 11+:
+
+```php
+// bootstrap/app.php
+->withMiddleware(function (Middleware $middleware) {
+    $middleware->trustProxies(at: '*', headers: Request::HEADER_X_FORWARDED_FOR);
+})
+```
+
+`shield:health` dan log boot akan memperingatkan kalau aplikasi berjalan di host publik
+tanpa konfigurasi ini.
+
 ## Fitur
 
 - Blok probe file sensitif (`.env`, `.git`, AWS credentials, `wp-config.php`, ...) & path traversal / RCE.
-- Verifikasi crawler (Googlebot/Bing/Yandex/dll) via reverse-DNS + CIDR — bot resmi lewat, bot palsu di-challenge.
+- Verifikasi crawler (Googlebot/Bing/Yandex/dll) via reverse-DNS + CIDR — bot resmi lolos,
+  bot palsu di-*observe* secara default (crawler tetap dilayani, kejadian dicatat) supaya
+  `/robots.txt` dan `/sitemap.xml` tidak ikut terblokir saat DNS bermasalah.
+  Set `SHIELD_BOT_MODE=challenge` untuk men-*challenge* crawler yang gagal diverifikasi.
 - Inspeksi body + rule pack injection (SQLi/XSS/LFI/command) — body tidak pernah disimpan.
 - Rate-limit path sensitif (brute-force login), behavior burst/404, skor risiko → challenge/ban.
 - Halaman challenge branded (Turnstile/reCAPTCHA/null) + trusted cookie (tidak menembus rule critical).
