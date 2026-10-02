@@ -4,27 +4,13 @@ Semua perubahan penting `ganadev/laravel-shield` didokumentasikan di sini. Forma
 [Keep a Changelog](https://keepachangelog.com/) dan proyek ini mematuhi
 [Semantic Versioning](https://semver.org/).
 
-## [1.2.0 - 2026-10-01]
+## [1.2.1 - 2026-10-02]
 
-Nomor `1.1.0` dilewati: rilis itu disiapkan tapi tidak pernah diberi tag Git, jadi tidak pernah terbit dan tidak
-ada versi yang perlu di-deprecate.
+Rilis ini menutup sepuluh temuan audit internal. Semuanya bersifat aditif atau pengetatan default, tidak ada
+perubahan pada threshold global maupun semantik signature.
 
 ### Changed
 
-- **Default `bots.mode` berubah dari `challenge` menjadi `observe`.** Default sebelumnya
-  bisa merusak SEO/AI-crawler: begitu reverse-DNS atau CIDR gagal — DNS bermasalah,
-  resolver diblokir, atau domain crawler belum terdaftar — crawler resmi diklaim palsu
-  lalu mendapat `403/419`, padahal `/robots.txt` dan `/sitemap.xml` harus selalu bisa
-  diakses. `mode` global sudah `observe` sejak awal, jadi ini juga
-  menyelaraskan `bots.mode` dengan falsafah dan dokumentasi package.
-
-  Perilaku opt-in tetap tersedia: set `SHIELD_BOT_MODE=challenge` (atau
-  `bots.mode` di config) untuk mengembalikan challenge pada crawler tak terverifikasi.
-  Naikkan hanya setelah `shield:health` dan log `unverified_crawler_claim_*` menunjukkan
-  verifikasi berjalan benar.
-
-  Yang berubah: crawler tak terverifikasi sekarang dilayani dan hanya dicatat
-  (`SIGNAL_UNVERIFIED_CRAWLER_CLAIM` tetap masuk skor), bukan di-challenge.
 - **`logging.events` (boolean) diganti `logging.level` (string).** Recorder menulis
   **setiap request** ke `security_events`, sehingga tabel tumbuh tanpa batas dan baris
   yang dibutuhkan untuk menyetel ambang batas ikut tenggelam. Config sekarang:
@@ -118,18 +104,16 @@ ada versi yang perlu di-deprecate.
   yang baru. Daftar `rules.skip_paths` dan `api.paths` sengaja **tidak** memakai env
   karena parsing daftar dari string ber-koma mudah salah set; tulis langsung sebagai
   array di config.
-- **Peringatan trusted proxy saat boot.** `ShieldServiceProvider` mencatat warning ketika
-  `mode` `challenge`/`enforce`, `app.url` menunjuk host publik, dan trusted proxies belum
-  dikonfigurasi. Sebelum ini masalah baru terlihat kalau somebody menjalankan `shield:health`.
-  Dampaknya nyata: tanpa trusted proxies semua klien terlihat sebagai IP proxy sehingga
-  rate limit per-IP dan ban tidak efektif.
-- **`TrustedProxyInspector`.** Membaca konfigurasi proxy dari static `TrustProxies`
-  (protected, tanpa getter publik). `Request::getTrustedProxies()` hanya mencerminkan
-  request berjalan, jadi dari CLI selalu kosong dan tidak bisa dipakai sebagai sumber
-  konfigurasi.
 
 ### Diperbaiki
 
+- **Constraint `ganadev/shield-core` diperketat ke `^1.2.1`.** Rilis ini memakai API
+  config core yang baru diperkenalkan di core `1.2.1` — `skip_paths`, `api.paths`, dan
+  `logging.level` — sementara constraint sebelumnya masih `^1.0`. Akibatnya `composer`
+  menganggap core `1.2.0` (yang belum punya properti tersebut) memenuhi syarat, lalu
+  `SecurityFirewallMiddleware` gagal saat runtime ketika membaca `$config->skipPaths`.
+  `^1.2.1` membuat `composer update` ikut menaikkan core, jadi kedua package **wajib**
+  naik ke `1.2.1` bersamaan.
 - **Fallback view halaman blokir ikut mengikuti default privacy.** `blocked.blade.php`
   memakai `?? true` untuk `branding.show_rule_id`, sehingga key yang hilang dari array
   branding akan tetap menampilkan rule id. Sekarang `?? false`, konsisten dengan default
@@ -142,6 +126,46 @@ ada versi yang perlu di-deprecate.
   leading `/` sementara setiap prefix hasil konfigurasi diawali `/`, sehingga tanpa
   normalisasi tidak ada satu pun prefix yang akan cocok. Pencocokan juga mencegah
   match silang seperti `/apifoo` terhadap prefix `/api`.
+
+## [1.2.0 - 2026-10-01]
+
+Nomor `1.1.0` dilewati: rilis itu disiapkan tapi tidak pernah diberi tag Git, jadi tidak pernah terbit dan tidak
+ada versi yang perlu di-deprecate.
+
+Perubahan pada rilis ini seluruhnya bersifat aditif: tidak ada threshold global maupun semantik signature yang
+berubah.
+
+### Changed
+
+- **Default `bots.mode` berubah dari `challenge` menjadi `observe`.** Default sebelumnya
+  bisa merusak SEO/AI-crawler: begitu reverse-DNS atau CIDR gagal — DNS bermasalah,
+  resolver diblokir, atau domain crawler belum terdaftar — crawler resmi diklaim palsu
+  lalu mendapat `403/419`, padahal `/robots.txt` dan `/sitemap.xml` harus selalu bisa
+  diakses. `mode` global sudah `observe` sejak awal, jadi ini juga
+  menyelaraskan `bots.mode` dengan falsafah dan dokumentasi package.
+
+  Perilaku opt-in tetap tersedia: set `SHIELD_BOT_MODE=challenge` (atau
+  `bots.mode` di config) untuk mengembalikan challenge pada crawler tak terverifikasi.
+  Naikkan hanya setelah `shield:health` dan log `unverified_crawler_claim_*` menunjukkan
+  verifikasi berjalan benar.
+
+  Yang berubah: crawler tak terverifikasi sekarang dilayani dan hanya dicatat
+  (`SIGNAL_UNVERIFIED_CRAWLER_CLAIM` tetap masuk skor), bukan di-challenge.
+
+### Ditambahkan
+
+- **Peringatan trusted proxy saat boot.** `ShieldServiceProvider` mencatat warning ketika
+  `mode` `challenge`/`enforce`, `app.url` menunjuk host publik, dan trusted proxies belum
+  dikonfigurasi. Sebelum ini masalah baru terlihat kalau somebody menjalankan `shield:health`.
+  Dampaknya nyata: tanpa trusted proxies semua klien terlihat sebagai IP proxy sehingga
+  rate limit per-IP dan ban tidak efektif.
+- **`TrustedProxyInspector`.** Membaca konfigurasi proxy dari static `TrustProxies`
+  (protected, tanpa getter publik). `Request::getTrustedProxies()` hanya mencerminkan
+  request berjalan, jadi dari CLI selalu kosong dan tidak bisa dipakai sebagai sumber
+  konfigurasi.
+
+### Diperbaiki
+
 - **`shield:health` tidak lagi false negative pada trusted proxy.** Sebelumnya tabel hanya
   menampilkan "terdeteksi" lalu keluar sebelum membaca konfigurasi, sehingga kondisi
   berbahaya (header forwarded ada, trusted proxies kosong) tidak pernah diberi warning.
