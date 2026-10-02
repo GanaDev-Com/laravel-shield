@@ -4,6 +4,40 @@ Semua perubahan penting `ganadev/laravel-shield` didokumentasikan di sini. Forma
 [Keep a Changelog](https://keepachangelog.com/) dan proyek ini mematuhi
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.2 - 2026-10-02]
+
+Rilis packaging untuk mengembalikan `1.2.1` ke keadaan yang bisa diinstal.
+
+### Fixed
+
+- **`1.2.1` ditarik dari metadata Packagist.** Tag `v1.2.1` sempat dipindahkan
+  dua kali setelah Packagist mengindeksnya. Packagist memblokir re-tag tersebut
+  dan menghapus versinya dari metadata, sehingga
+  `composer require ganadev/laravel-shield:^1.2.1` gagal dengan
+  `found ... [dev-main, v1.0.0, v1.2.0] but it does not match the constraint`.
+  Halaman HTML di Packagist masih menampilkan `1.2.1`, tetapi Composer tidak
+  pernah menerimanya.
+- **`composer.json` pada metadata `1.2.1` masih memakai `ganadev/shield-core: ^1.0`.**
+  Metadata dibekukan saat indeks pertama, sehingga constraint `^1.2.1` tidak
+  pernah ikut tersebar. Selama `1.2.1` masih tersedia, jalur upgrade bisa
+  memasang adapter `1.2.1` di atas `shield-core 1.2.0` dan langsung gagal saat
+  request menyentuh middleware, karena core `1.2.0` belum punya properti
+  `skipPaths`, `apiPaths`, dan `apiDetectAccept`
+  (`src/Middleware/SecurityFirewallMiddleware.php`). Pada `1.2.2` constraint yang
+  benar sudah ikut tersebar.
+
+### Notes
+
+- **Tidak ada perubahan kode.** `composer.json` di repo sudah `^1.2.1` sejak
+  commit `b95f6f3`, tapi paket `1.2.1` tidak pernah menyampaikannya. Naik ke
+  `1.2.2` aman tanpa perubahan perilaku.
+- Yang sempat memasang `1.2.1` selama jendela ketika versinya masih tersedia
+  (sejak `2026-10-02 02:47 UTC`) wajib menaikkan kedua package sekaligus:
+
+  ```bash
+  composer require ganadev/laravel-shield:^1.2.2 ganadev/shield-core:^1.2.2
+  ```
+
 ## [1.2.1 - 2026-10-02]
 
 Rilis ini menutup sepuluh temuan audit internal. Semuanya bersifat aditif atau pengetatan default, tidak ada
