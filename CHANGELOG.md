@@ -4,7 +4,10 @@ Semua perubahan penting `ganadev/laravel-shield` didokumentasikan di sini. Forma
 [Keep a Changelog](https://keepachangelog.com/) dan proyek ini mematuhi
 [Semantic Versioning](https://semver.org/).
 
-## [1.1.0 - 2026-10-01]
+## [1.2.0 - 2026-10-01]
+
+Nomor `1.1.0` dilewati: rilis itu disiapkan tapi tidak pernah diberi tag Git, jadi tidak pernah terbit dan tidak
+ada versi yang perlu di-deprecate.
 
 ### Changed
 
@@ -22,9 +25,99 @@ Semua perubahan penting `ganadev/laravel-shield` didokumentasikan di sini. Forma
 
   Yang berubah: crawler tak terverifikasi sekarang dilayani dan hanya dicatat
   (`SIGNAL_UNVERIFIED_CRAWLER_CLAIM` tetap masuk skor), bukan di-challenge.
+- **`logging.events` (boolean) diganti `logging.level` (string).** Recorder menulis
+  **setiap request** ke `security_events`, sehingga tabel tumbuh tanpa batas dan baris
+  yang dibutuhkan untuk menyetel ambang batas ikut tenggelam. Config sekarang:
+
+  ```diff
+   'logging' => [
+  -    'events' => true,
+  +    'level' => (string) env('SHIELD_LOG_LEVEL', 'suspicious'),
+  +    'bypass_events' => (bool) env('SHIELD_LOG_BYPASS_EVENTS', true),
+       'retention_days' => (int) env('SHIELD_LOG_RETENTION_DAYS', 30),
+   ],
+  ```
+
+  `suspicious` (default) menyimpan semua keputusan selain `ALLOW`; `blocked` hanya
+  blokir dan ban sementara; `all` menyimpan setiap request untuk debugging singkat.
+  Nilai lain ditolak saat boot. `SHIELD_LOG_BYPASS_EVENTS` kini akhirnya terekspos.
+
+  **Catatan upgrade:** `config/shield.php` yang sudah di-publish tidak ikut berubah, jadi
+  `'events' => true` menjadi tidak terbaca dan `level` memakai default `suspicious`.
+  Tambahkan `'level' => 'all'` eksplisit bila Anda memang mengandalkan pencatatan tiap
+  request. Penurunan jumlah event setelah upgrade itu diharapkan.
+- **Default `branding.show_rule_id` `true` menjadi `false`.** Halaman blokir tidak lagi
+  membocorkan detail signature ke penyerang. Header `X-Shield-Blocked` tetap membawa rule
+  id karena itu sinyal operator, dan `rule_id` tetap tersedia di tabel
+  `security_events` untuk kebutuhan debugging produksi.
 
 ### Ditambahkan
 
+- **Jawaban JSON untuk klien API dan M2M.** Klien mesin tidak bisa merender halaman
+  blokir dan akan salah membaca HTML atau redirect sebagai error protokol. Blok dan
+  challenge kini otomatis memakai JSON bila request menegosiasikan JSON atau path-nya
+  ada di `api.paths`. Browser tetap menerima HTML dan redirect seperti sebelumnya.
+
+  ```dotenv
+  SHIELD_API_DETECT_ACCEPT=true
+  ```
+
+  Bentuk blokir, status tetap mengikuti `response_code` (default 404) plus header
+  `X-Shield-Blocked`:
+
+  ```json
+  {
+    "error": "request_blocked",
+    "app_id": "my-app",
+    "rule_id": "sensitive.env",
+    "decision": "BLOCK_REQUEST",
+    "score": 12
+  }
+  ```
+
+  `decision` memakai nilai enum yang sama dengan kolom `decision` di
+  `security_events` (`ALLOW`, `OBSERVE`, `CHALLENGE`, `BLOCK_REQUEST`, `TEMP_BAN`),
+  jadi log dan respons bisa dikorelasikan tanpa tabel pemetaan.
+
+  Bentuk challenge memakai `401` dan header `X-Shield-Challenge: 1`, tanpa redirect,
+  karena klien tidak punya browser untuk menyelesaikan Turnstile:
+
+  ```json
+  {
+    "error": "challenge_required",
+    "app_id": "my-app",
+    "challenge_url": "https://app.example.com/shield/challenge?redirect=%2Fapi%2Forders"
+  }
+  ```
+
+  Tambahkan `api.paths` (mis. `/oauth/token`) bila klien Anda tidak mengirim
+  `Accept: application/json`.
+- **`rules.skip_paths`.** Prefix path yang menonaktifkan pemindaian body dan penilaian
+  perilaku, untuk mengurangi false positive pada rich text editor, webhook, dan traffic
+  M2M/NAT yang berbagi satu IP. Signature di URI tetap aktif, sehingga payload critical
+  tidak pernah bisa lolos lewat jalur yang dikecualikan. Entri harus diawali `/` dan
+  bebas query string; `''` dan `'/'` ditolak saat boot.
+- **Penjadwalan `shield:prune` otomatis.** `ShieldServiceProvider` mendaftarkan prune
+  harian supaya `security_events` tidak tumbuh tanpa batas. Host tetap **wajib**
+  menjalankan `php artisan schedule:run` setiap menit. Hapus entri
+  `Schedule::command('shield:prune')` milik Anda sendiri agar tidak berjalan dua kali.
+- **Baris `Crawler verification` di `shield:health`.** Probe PTR sekali jalan ke IP
+  Googlebot yang dikenal untuk membuktikan resolver aplikasi bisa menjawab reverse-DNS.
+  Probe bersifat best-effort dan **tidak pernah** mengubah exit code, karena ketersediaan
+  DNS adalah properti lingkungan, bukan cacat Shield — resolver bermasalah di CI tidak
+  boleh menggagalkan pipeline. Baris disembunyikan bila
+  `bots.verification.enabled` dimatikan.
+- **Deteksi posisi middleware pada `LaravelTrustedCookie`.** Bila cookie trusted diterima
+  dalam bentuk sudah ter-decrypt, adapter mencatat satu peringatan ke log application.
+  Gejalanya middleware dipindahkan ke group `web`, tempat `EncryptCookies` berjalan lebih
+  dulu sehingga setiap pengguna yang sudah lolos challenge akan ditanya ulang terus.
+  Peringatan hanya ditulis sekali per instance.
+- **`Content-Type: text/html` eksplisit pada halaman blokir.** Sebelumnya header itu
+  tidak pernah di-set, sehingga bentuk respons bisa bergantung pada default Symfony.
+- **`SHIELD_LOG_LEVEL` dan `SHIELD_API_DETECT_ACCEPT`** sebagai env untuk key config
+  yang baru. Daftar `rules.skip_paths` dan `api.paths` sengaja **tidak** memakai env
+  karena parsing daftar dari string ber-koma mudah salah set; tulis langsung sebagai
+  array di config.
 - **Peringatan trusted proxy saat boot.** `ShieldServiceProvider` mencatat warning ketika
   `mode` `challenge`/`enforce`, `app.url` menunjuk host publik, dan trusted proxies belum
   dikonfigurasi. Sebelum ini masalah baru terlihat kalau somebody menjalankan `shield:health`.
@@ -37,6 +130,18 @@ Semua perubahan penting `ganadev/laravel-shield` didokumentasikan di sini. Forma
 
 ### Diperbaiki
 
+- **Fallback view halaman blokir ikut mengikuti default privacy.** `blocked.blade.php`
+  memakai `?? true` untuk `branding.show_rule_id`, sehingga key yang hilang dari array
+  branding akan tetap menampilkan rule id. Sekarang `?? false`, konsisten dengan default
+  config yang baru.
+- **`safeRedirect()` merusak query string.** `ChallengeController` memanggil `e()` pada
+  path tujuan, yang mengubah `&` menjadi `&amp;`, dan itu mendarat apa adanya di header
+  `Location`. Setiap redirect dengan lebih dari satu parameter terpotong. Path kini
+  dikembalikan apa adanya; escaping tetap terjadi di lapisan Blade saat render.
+- **Pencocokan prefix path dinormalisasi.** `Request::path()` mengembalikan path tanpa
+  leading `/` sementara setiap prefix hasil konfigurasi diawali `/`, sehingga tanpa
+  normalisasi tidak ada satu pun prefix yang akan cocok. Pencocokan juga mencegah
+  match silang seperti `/apifoo` terhadap prefix `/api`.
 - **`shield:health` tidak lagi false negative pada trusted proxy.** Sebelumnya tabel hanya
   menampilkan "terdeteksi" lalu keluar sebelum membaca konfigurasi, sehingga kondisi
   berbahaya (header forwarded ada, trusted proxies kosong) tidak pernah diberi warning.

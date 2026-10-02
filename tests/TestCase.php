@@ -29,7 +29,9 @@ abstract class TestCase extends Orchestra
             $config->set('cache.default', 'array');
             $config->set('shield.mode', 'enforce');
             $config->set('shield.challenge.driver', 'null');
-            $config->set('shield.logging.events', true);
+            // Record every decision so tests can assert on the event log
+            // without opting in per case.
+            $config->set('shield.logging.level', 'all');
             $config->set('app.key', 'base64:47v1LbFEGV5Tsf+IMtI66K/PVuyP/r9wGCE67OFTYZY=');
         });
     }

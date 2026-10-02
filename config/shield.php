@@ -403,6 +403,23 @@ return [
             'wordpress' => (bool) env('SHIELD_RULES_PACK_WORDPRESS', false),
             'injection' => (bool) env('SHIELD_RULES_PACK_INJECTION', true),
         ],
+
+        /*
+        | Prefix path yang dikecualikan dari inspeksi body dan dari signal
+        | perilaku. Cocok untuk endpoint yang memang membawa teks bebas
+        | (payload JSON, webhook, rich text editor) atau untuk endpoint yang
+        | dipakai banyak klien sekaligus lewat satu IP (oauth token, gerbang
+        | M2M), karena penghitung perilaku di-key dengan IP sehingga satu
+        | struktural bisa terlihat seperti brute force.
+        |
+        | Signature di URI tetap selalu aktif, jadi payload critical tidak
+        | pernah bisa lolos dengan menaruh path-nya di sini. Gunakan
+        | "allowlist" hanya jika Anda benar-benar ingin melewati scoring juga.
+        |
+        | Setiap entri harus diawali "/" dan tidak boleh berisi query string.
+        |
+        */
+        'skip_paths' => [],
     ],
 
     /*
@@ -435,19 +452,61 @@ return [
     | Pencatatan Event
     |--------------------------------------------------------------------------
     |
-    | "events"         : simpan setiap keputusan firewall ke tabel
-    |                   "security_events". Nilainya selalu true karena data ini
-    |                   adalah bahan utama untuk menyetel ambang batas dan
-    |                   membaca kejadian setelah insiden.
-    | "retention_days" : umur event sebelum bisa dipangkas. Penghapusan tidak
-    |                   terjadi otomatis, jadi jalankan `php artisan shield:prune`
-    |                   dari scheduler supaya tabel tidak tumbuh tanpa batas.
+    | "level"         : seberapa banyak keputusan yang disimpan ke tabel
+    |                   "security_events".
+    |                   - "suspicious" (default): semua keputusan selain ALLOW,
+    |                     termasuk challenge, observe, dan pemblokiran. Ini yang
+    |                     Anda butuhkan untuk menyetel ambang batas dan membaca
+    |                     kejadian setelah insiden.
+    |                   - "blocked": hanya blokir dan ban sementara. Paling
+    |                     hemat tabel, tapi Anda kehilangan jejak-nejak yang
+    |                     mendekati ambang batas.
+    |                   - "all": setiap request, termasuk yang diizinkan.
+    |                     Hanya berguna untuk debugging singkat, karena tabel
+    |                     tumbuh jauh lebih cepat.
+    | "bypass_events" : tetap catat event saat request di-allowlist atau saat
+    |                   fail_mode="closed" menutup jalan. Short circuit ini
+    |                   security-relevant, jadi default-nya menyalakan.
+    | "retention_days" : umur event sebelum bisa dipangkas. Penghapusan berjalan
+    |                   otomatis harian lewat scheduler, tetapi aplikasi Anda
+    |                   tetap wajib menjalankan `php artisan schedule:run`
+    |                   setiap menit lewat cron.
     |
     */
 
     'logging' => [
-        'events' => true,
+        'level' => (string) env('SHIELD_LOG_LEVEL', 'suspicious'),
+        'bypass_events' => (bool) env('SHIELD_LOG_BYPASS_EVENTS', true),
         'retention_days' => (int) env('SHIELD_LOG_RETENTION_DAYS', 30),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Klien API / Machine-to-Machine
+    |--------------------------------------------------------------------------
+    |
+    | Klien API tidak bisa merender halaman blokir dan akan salah membaca
+    | jawaban HTML atau redirect sebagai error protokol. Blok dan challenge
+    | otomatis memakai bentuk JSON bila request jelas menegosiasikan JSON
+    | atau path-nya ada di "paths".
+    |
+    | "paths"         : prefix path yang selalu mendapat jawaban JSON, bahkan
+    |                   tanpa header Accept. Tambahkan "/oauth/token" atau
+    |                   "/api" kalau klien Anda tidak mengirim Accept.
+    | "detect_accept" : dinyalakan secara default, artinya request dengan
+    |                   Accept: application/json (atau fetch/ajax) mendapat
+    |                   JSON tanpa perlu didaftarkan. Matikan kalau memakai
+    |                   framework yang mengirim Accept JSON untuk form biasa.
+    |
+    | Status blokir tetap mengikuti "response_code" (default 404) supaya
+    | keberadaan firewall tidak terkonfirmasi ke penyerang, dan challenge
+    | memakai 401 dengan header X-Shield-Challenge: 1.
+    |
+    */
+
+    'api' => [
+        'paths' => [],
+        'detect_accept' => (bool) env('SHIELD_API_DETECT_ACCEPT', true),
     ],
 
     /*
@@ -456,7 +515,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Antarmuka HTTP untuk melihat event, mengelola ban, dan mengecek kesehatan
-    | komponen. Default nonaktif karenainnings membuka data reputasi pengguna.
+    | komponen. Default nonaktif karena ini membuka data reputasi pengguna.
     |
     | "middleware" : middleware yang melindungi route admin. Default "web" dan
     |               "auth" berarti harus login lebih dulu. Jangan dikosongkan
@@ -640,8 +699,10 @@ return [
     |
     | "show_rule_id" : tampilkan ID rule yang cocok di halaman blokir. Sangat
     |                  membantu saat penyetelan, tapi membocorkan detail
-    |                  signature ke penyerang. Matikan di produksi kalau ini
-    |                  dianggap sensitif.
+    |                  signature ke penyerang, jadi default-nya sekarang false.
+    |                  Nyalakan hanya di lingkungan pengembangan. Untuk
+    |                  kebutuhan debugging produksi, baca `rule_id` dari event
+    |                  di tabel "security_events", bukan dari halaman.
     |
     */
 
@@ -649,6 +710,6 @@ return [
         'title' => env('SHIELD_BRANDING_TITLE', 'Ganadev Laravel Shield'),
         'accent_color' => env('SHIELD_BRANDING_ACCENT', '#22d3ee'),
         'background_color' => env('SHIELD_BRANDING_BG', '#0b1220'),
-        'show_rule_id' => (bool) env('SHIELD_BRANDING_SHOW_RULE_ID', true),
+        'show_rule_id' => (bool) env('SHIELD_BRANDING_SHOW_RULE_ID', false),
     ],
 ];

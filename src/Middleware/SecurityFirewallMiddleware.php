@@ -114,6 +114,10 @@ final class SecurityFirewallMiddleware
             return '';
         }
 
+        if ($this->isSkippedPath($request->path())) {
+            return '';
+        }
+
         $contentType = strtolower((string) $request->headers->get('content-type', ''));
         if (str_starts_with($contentType, 'multipart/')) {
             return '';
@@ -129,6 +133,16 @@ final class SecurityFirewallMiddleware
         }
 
         return $body;
+    }
+
+    /**
+     * `rules.skip_paths` disables body scanning and behavior scoring on the
+     * listed prefixes, but signature matching in the URI still runs, so a
+     * critical payload can never be smuggled through a skipped path.
+     */
+    private function isSkippedPath(string $path): bool
+    {
+        return $this->matchesPathPrefix($path, $this->config->skipPaths);
     }
 
     private function readCounters(RequestContext $context): BehaviorCounters
@@ -194,6 +208,10 @@ final class SecurityFirewallMiddleware
 
     private function blockResponse(Request $request, EngineResult $result): SymfonyResponse
     {
+        if ($this->isApiRequest($request)) {
+            return $this->jsonBlockResponse($result);
+        }
+
         $data = [
             'ruleId' => $result->verdict->ruleId ?? 'unknown',
             'appId' => $this->config->appId,
@@ -212,6 +230,32 @@ final class SecurityFirewallMiddleware
         $response = new Response(
             $html,
             $this->config->responseCode,
+            ['Content-Type' => 'text/html; charset=UTF-8'],
+        );
+        $response->headers->set('X-Shield-Blocked', $result->verdict->ruleId ?? 'shield');
+        $response->headers->set('Cache-Control', 'no-store, no-cache, must-revalidate');
+
+        return $response;
+    }
+
+    /**
+     * Machine clients cannot render the blocked page and would treat a 200/302
+     * HTML answer as a protocol error. The status code stays `response_code`
+     * (404 by default) so the firewall is not advertised to an attacker; only
+     * the representation changes.
+     */
+    private function jsonBlockResponse(EngineResult $result): SymfonyResponse
+    {
+        $response = new Response(
+            (string) json_encode([
+                'error' => 'request_blocked',
+                'app_id' => $this->config->appId,
+                'rule_id' => $result->verdict->ruleId,
+                'decision' => $result->verdict->decision->value,
+                'score' => $result->verdict->score,
+            ]),
+            $this->config->responseCode,
+            ['Content-Type' => 'application/json'],
         );
         $response->headers->set('X-Shield-Blocked', $result->verdict->ruleId ?? 'shield');
         $response->headers->set('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -224,9 +268,71 @@ final class SecurityFirewallMiddleware
         // Kirim path relatif (bukan URL absolut) karena ChallengeController
         // hanya menerima redirect same-origin yang diawali "/". getRequestUri()
         // menghasilkan "/home" atau "/home?page=2" tanpa host.
-        return new RedirectResponse(
-            $this->url->route('shield.challenge', ['redirect' => $request->getRequestUri()]),
+        $challengeUrl = $this->url->route('shield.challenge', ['redirect' => $request->getRequestUri()]);
+
+        if ($this->isApiRequest($request)) {
+            return $this->jsonChallengeResponse($challengeUrl);
+        }
+
+        return new RedirectResponse($challengeUrl);
+    }
+
+    /**
+     * An API client has no browser to solve a challenge, so it receives an
+     * explicit machine-readable signal instead of a redirect. 401 keeps the
+     * existing challenge contract (no terminal state, retryable) while the
+     * header lets a client branch without parsing the body.
+     */
+    private function jsonChallengeResponse(string $challengeUrl): SymfonyResponse
+    {
+        $response = new Response(
+            (string) json_encode([
+                'error' => 'challenge_required',
+                'app_id' => $this->config->appId,
+                'challenge_url' => $challengeUrl,
+            ]),
+            401,
+            ['Content-Type' => 'application/json'],
         );
+        $response->headers->set('X-Shield-Challenge', '1');
+        $response->headers->set('Cache-Control', 'no-store, no-cache, must-revalidate');
+
+        return $response;
+    }
+
+    /**
+     * A request is treated as an API call when it is explicitly listed in
+     * `api.paths`, or when it negotiates JSON and auto-detection is enabled.
+     */
+    private function isApiRequest(Request $request): bool
+    {
+        if ($this->matchesPathPrefix($request->path(), $this->config->apiPaths)) {
+            return true;
+        }
+
+        return $this->config->apiDetectAccept && $request->expectsJson();
+    }
+
+    /**
+     * `Request::path()` returns the path without a leading slash while every
+     * configured prefix starts with one, so the path is normalized before the
+     * comparison. Without this no configured prefix would ever match.
+     *
+     * @param  list<string>  $prefixes
+     */
+    private function matchesPathPrefix(string $path, array $prefixes): bool
+    {
+        $normalized = '/'.ltrim($path, '/');
+
+        foreach ($prefixes as $prefix) {
+            $prefix = '/'.ltrim($prefix, '/');
+
+            if ($normalized === $prefix || str_starts_with($normalized, rtrim($prefix, '/').'/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function onInfrastructureFailure(Request $request, Closure $next): SymfonyResponse

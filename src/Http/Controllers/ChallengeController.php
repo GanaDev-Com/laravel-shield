@@ -123,6 +123,10 @@ final class ChallengeController
             return '/';
         }
 
-        return e($redirect);
+        // Return the path unescaped. e() would turn the query separator into
+        // "&amp;", which then lands verbatim in the Location header and breaks
+        // every redirect target that carries more than one parameter. All
+        // rendering goes through Blade's {{ }} so output stays escaped there.
+        return $redirect;
     }
 }

@@ -4,20 +4,20 @@ declare(strict_types=1);
 
 namespace Ganadev\Shield\Laravel\Tests\Unit;
 
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 
 /**
  * Runs shield:health with a given forwarded-header/proxy configuration and
- * returns the rendered table plus the warning text.
+ * returns the rendered table, the warning text, and the exit code.
  *
- * @param  array<string, string>  $server  $_SERVER overrides for the request
- * @return array{table: string, warning: string}
- */
-/**
  * Request::setTrustedProxies() and TrustProxies::$alwaysTrust* are global
  * statics; without this they leak between cases.
+ *
+ * @param  array<string, string>  $server  $_SERVER overrides for the request
+ * @return array{table: string, warning: string, code: int}
  */
 beforeEach(function () {
     Request::setTrustedProxies([], 0);
@@ -33,12 +33,13 @@ function runHealthCommand(array $server = []): array
     }
 
     try {
-        Artisan::call('shield:health');
+        $code = Artisan::call('shield:health');
         $output = Artisan::output();
 
         return [
             'table' => $output,
             'warning' => $output,
+            'code' => $code,
         ];
     } finally {
         foreach ($previous as $key => $value) {
@@ -103,4 +104,55 @@ it('reads proxies configured through TrustProxies even without a forwarded reque
     $result = runHealthCommand();
 
     expect($result['warning'])->not->toContain('Peringatan trusted proxy');
+});
+
+describe('crawler verification probe', function () {
+    it('reports a crawler verification row', function () {
+        $result = runHealthCommand();
+
+        expect($result['table'])->toContain('Crawler verification');
+    });
+
+    it('never fails the command, whatever the resolver returns', function () {
+        // The probe depends on the environment's DNS, so it must not be able to
+        // turn a healthy Shield into a failing health check.
+        $result = runHealthCommand();
+
+        expect($result['code'])->toBe(0);
+    });
+
+    it('skips the probe when crawler verification is disabled', function () {
+        config()->set('shield.bots.verification.enabled', false);
+
+        $result = runHealthCommand();
+
+        expect($result['table'])->toContain('Crawler verification')
+            ->and($result['table'])->toContain('dimatikan')
+            ->and($result['warning'])->not->toContain('Peringatan crawler verification');
+    });
+
+    it('does not claim the probe passed when verification is enabled', function () {
+        config()->set('shield.bots.verification.enabled', true);
+
+        $result = runHealthCommand();
+
+        // Depending on the sandbox the row is either "ok" or a PTR warning, but
+        // it must never claim success while verification is off.
+        expect($result['table'])->not->toContain('dimatikan');
+    });
+});
+
+it('registers a daily prune for the security events table', function () {
+    $schedule = app(Schedule::class);
+
+    $commands = collect($schedule->events())
+        ->map(fn ($event) => $event->command)
+        ->implode(' ');
+
+    expect($commands)->toContain('shield:prune');
+
+    $prune = collect($schedule->events())
+        ->first(fn ($event) => str_contains((string) $event->command, 'shield:prune'));
+
+    expect($prune->expression)->toBe('0 0 * * *');
 });

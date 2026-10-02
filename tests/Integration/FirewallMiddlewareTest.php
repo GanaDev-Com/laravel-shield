@@ -163,6 +163,8 @@ it('shows a verification error alert on the challenge page', function () {
 });
 
 it('renders the blocked page as branded html', function () {
+    config()->set('shield.branding.show_rule_id', true);
+
     $response = $this->get('/.env')->assertStatus(404);
     $response->assertHeader('X-Shield-Blocked', 'sensitive.env');
 
@@ -170,6 +172,15 @@ it('renders the blocked page as branded html', function () {
     expect($html)->toContain('Access Blocked');
     expect($html)->toContain('sensitive.env');
     expect($html)->toContain('Ganadev Laravel Shield');
+});
+
+it('hides the rule id on the blocked page by default', function () {
+    $response = $this->get('/.env')->assertStatus(404);
+    // The header is a deliberate operator signal and stays regardless of the
+    // page setting; only the rendered body hides the rule id.
+    $response->assertHeader('X-Shield-Blocked', 'sensitive.env');
+
+    expect($response->getContent())->not->toContain('sensitive.env');
 });
 
 it('hides the rule id on the blocked page when branding.show_rule_id is false', function () {
@@ -443,4 +454,135 @@ it('still allows same-origin relative redirects', function () {
             'shield_challenge_token' => 'test-token',
             'redirect' => '/home?from=challenge',
         ])->assertRedirect('/home?from=challenge');
+});
+
+it('keeps the query separator intact when redirecting with several parameters', function () {
+    $token = 'csrf-token';
+
+    // e() here would turn the separator into "&amp;" and the Location header
+    // would carry a parameter literally named "amp;page".
+    $this->withSession(['_token' => $token])
+        ->post('/shield/challenge/verify', [
+            '_token' => $token,
+            'shield_challenge_token' => 'test-token',
+            'redirect' => '/home?mode=app&page=2',
+        ])->assertRedirect('/home?mode=app&page=2');
+});
+
+it('escapes the redirect when rendering it on the challenge page', function () {
+    $html = $this->get('/shield/challenge?redirect='.urlencode('/home?a=1&b=2'))
+        ->assertOk()
+        ->getContent();
+
+    // The raw value must not be injected as markup, but it is rendered through
+    // Blade so the separator survives as a real ampersand.
+    expect($html)->not->toContain('<script>alert(1)</script>');
+});
+
+describe('api responses', function () {
+    it('returns json for a block when the client accepts json', function () {
+        $response = $this->getJson('/.env')->assertStatus(404);
+
+        $response->assertHeader('X-Shield-Blocked', 'sensitive.env');
+        expect($response->json('error'))->toBe('request_blocked');
+        expect($response->json('rule_id'))->toBe('sensitive.env');
+        expect($response->json('decision'))->toBe('BLOCK_REQUEST');
+        expect($response->json('app_id'))->not->toBeEmpty();
+    });
+
+    it('returns json for a block on a configured api path without an accept header', function () {
+        config()->set('shield.api.paths', ['/oauth/token']);
+
+        $response = $this->get('/oauth/token/.env')->assertStatus(404);
+
+        $response->assertHeader('Content-Type', 'application/json');
+        $response->assertHeader('X-Shield-Blocked', 'sensitive.env');
+        expect($response->json('error'))->toBe('request_blocked');
+    });
+
+    it('returns json for a challenge instead of a redirect', function () {
+        SecurityIpBan::query()->create([
+            'ip_address' => '10.0.0.9',
+            'status' => BanStatus::Active->value,
+            'reason' => 'test ban',
+            'risk_score' => 25,
+            'offense_count' => 1,
+            'banned_at' => now(),
+            'expires_at' => now()->addHour(),
+            'last_seen_at' => now(),
+        ]);
+
+        $response = $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.9'])
+            ->getJson('/home')
+            ->assertStatus(401);
+
+        $response->assertHeader('X-Shield-Challenge', '1');
+        $response->assertHeader('Content-Type', 'application/json');
+        expect($response->json('error'))->toBe('challenge_required');
+        expect($response->json('challenge_url'))->toContain('/shield/challenge');
+        expect($response->headers->get('Location'))->toBeNull();
+    });
+
+    it('keeps sending html to a browser', function () {
+        $response = $this->get('/.env')->assertStatus(404);
+
+        $response->assertHeader('Content-Type', 'text/html; charset=UTF-8');
+        expect($response->getContent())->toContain('Access Blocked');
+    });
+
+    it('keeps redirecting a browser to the challenge page', function () {
+        SecurityIpBan::query()->create([
+            'ip_address' => '10.0.0.10',
+            'status' => BanStatus::Active->value,
+            'reason' => 'test ban',
+            'risk_score' => 25,
+            'offense_count' => 1,
+            'banned_at' => now(),
+            'expires_at' => now()->addHour(),
+            'last_seen_at' => now(),
+        ]);
+
+        $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.10'])
+            ->get('/home')
+            ->assertRedirect(route('shield.challenge', ['redirect' => '/home']));
+    });
+
+    it('can turn accept detection off while keeping explicit api paths', function () {
+        config()->set('shield.api.detect_accept', false);
+        config()->set('shield.api.paths', ['/api']);
+
+        $this->getJson('/.env')->assertStatus(404);
+
+        $response = $this->get('/.env')->assertStatus(404);
+        $response->assertHeader('Content-Type', 'text/html; charset=UTF-8');
+    });
+});
+
+describe('rules.skip_paths', function () {
+    it('does not scan the body on a skipped path', function () {
+        Route::post('/api/webhooks', fn () => ['stored' => true])->name('webhooks');
+        config()->set('shield.rules.skip_paths', ['/api/webhooks']);
+
+        // The SQLi payload is what payload.sqli.union matches on; the skipped
+        // path means the body is never handed to the signature engine.
+        $this->postJson('/api/webhooks', [
+            'username' => "admin' UNION SELECT password FROM users--",
+        ])->assertOk();
+    });
+
+    it('still scans the body on a path that is not skipped', function () {
+        Route::post('/api/orders', fn () => ['created' => true])->name('orders');
+        config()->set('shield.rules.skip_paths', ['/api/webhooks']);
+
+        $this->postJson('/api/orders', [
+            'username' => "admin' UNION SELECT password FROM users--",
+        ])->assertStatus(404);
+    });
+
+    it('still enforces a critical signature in the uri on a skipped path', function () {
+        Route::post('/api/webhooks', fn () => ['stored' => true])->name('webhooks');
+        config()->set('shield.rules.skip_paths', ['/api/webhooks']);
+
+        $this->get('/api/webhooks/.env')->assertStatus(404);
+    });
 });

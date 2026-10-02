@@ -3,7 +3,7 @@
     $accent = $branding['accent_color'] ?? '#22d3ee';
     $bg = $branding['background_color'] ?? '#0b1220';
     $title = $branding['title'] ?? 'Ganadev Laravel Shield';
-    $showRule = $branding['show_rule_id'] ?? true;
+    $showRule = $branding['show_rule_id'] ?? false;
     $rule = $ruleId ?? 'unknown';
 @endphp
 <!doctype html>

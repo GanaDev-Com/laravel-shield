@@ -18,6 +18,7 @@ use Ganadev\Shield\Laravel\Console\Commands\ShieldRulesListCommand;
 use Ganadev\Shield\Laravel\Middleware\SecurityFirewallMiddleware;
 use Ganadev\Shield\Laravel\Support\ShieldResolver;
 use Ganadev\Shield\Laravel\Support\TrustedProxyInspector;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Contracts\Routing\UrlGenerator;
 use Illuminate\Contracts\View\Factory;
@@ -80,7 +81,26 @@ final class ShieldServiceProvider extends ServiceProvider
         $this->app->make(Router::class)
             ->aliasMiddleware('shield.firewall', SecurityFirewallMiddleware::class);
 
+        $this->scheduleEventPruning();
+
         $this->warnAboutMissingTrustedProxies();
+    }
+
+    /**
+     * Registers the daily prune so the security_events table cannot grow without
+     * bound. Registering it here only defines the schedule; the host still has to
+     * run `php artisan schedule:run` every minute, which is the standard Laravel
+     * requirement and is called out in the docs.
+     */
+    private function scheduleEventPruning(): void
+    {
+        if (! $this->app->runningInConsole()) {
+            return;
+        }
+
+        $this->callAfterResolving(Schedule::class, function (Schedule $schedule): void {
+            $schedule->command('shield:prune')->daily();
+        });
     }
 
     /**

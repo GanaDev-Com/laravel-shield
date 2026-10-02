@@ -15,6 +15,8 @@ use Illuminate\Contracts\Encryption\Encrypter;
  */
 final class LaravelTrustedCookie implements TrustedCookieInterface
 {
+    private bool $warnedAboutPosition = false;
+
     public function __construct(
         private readonly Encrypter $encrypter,
     ) {}
@@ -37,6 +39,18 @@ final class LaravelTrustedCookie implements TrustedCookieInterface
 
     public function validate(string $cookieValue, RequestContext $context): bool
     {
+        if ($this->looksAlreadyDecrypted($cookieValue)) {
+            // The firewall is documented to run as global middleware, which
+            // means before the web group's EncryptCookies. If it is ever moved
+            // into that group, Laravel hands the cookie over already decrypted
+            // and this decrypt() call would fail for every user, so trusted
+            // traffic would be challenged in a loop. Report the misplacement
+            // once instead of letting it look like random cookie corruption.
+            $this->warnAboutMiddlewarePosition();
+
+            return false;
+        }
+
         try {
             $payload = $this->encrypter->decrypt($cookieValue);
         } catch (\Throwable) {
@@ -66,6 +80,36 @@ final class LaravelTrustedCookie implements TrustedCookieInterface
     private function uaHash(string $userAgent): string
     {
         return hash('sha256', strtolower(trim($userAgent)));
+    }
+
+    /**
+     * An encrypted payload is an opaque base64/serialized blob, never JSON. A
+     * JSON-looking value can therefore only come from Laravel's cookie
+     * decryption already having run upstream.
+     */
+    private function looksAlreadyDecrypted(string $cookieValue): bool
+    {
+        $trimmed = ltrim($cookieValue);
+
+        return $trimmed !== '' && ($trimmed[0] === '{' || $trimmed[0] === '[');
+    }
+
+    private function warnAboutMiddlewarePosition(): void
+    {
+        if ($this->warnedAboutPosition) {
+            return;
+        }
+
+        $this->warnedAboutPosition = true;
+
+        if (! function_exists('logger')) {
+            return;
+        }
+
+        logger()->warning('Ganadev Shield: cookie trusted diterima dalam bentuk yang sudah ter-decrypt. '
+            .'Middleware shield.firewall kemungkinan sudah dipindahkan ke dalam group "web" sehingga '
+            .'EncryptCookies berjalan lebih dulu. Kembalikan middleware ke posisi global (append), '
+            .'agar Shield membaca cookie terenkripsi itu sendiri.');
     }
 
     private function coarsePrefix(string $ip): string

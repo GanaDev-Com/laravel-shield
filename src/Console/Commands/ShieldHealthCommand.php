@@ -12,6 +12,12 @@ use Illuminate\Http\Request;
 
 final class ShieldHealthCommand extends Command
 {
+    /**
+     * A documented Googlebot address whose reverse DNS is stable, used only to
+     * prove the resolver can answer PTR queries at all.
+     */
+    private const PROBE_IP = '66.249.66.1';
+
     protected $signature = 'shield:health';
 
     protected $description = 'Cek kesehatan komponen Ganadev Shield.';
@@ -37,6 +43,7 @@ final class ShieldHealthCommand extends Command
         }
 
         [$proxyStatus, $proxyWarning] = $this->proxyStatus();
+        [$crawlerStatus, $crawlerWarning] = $this->crawlerVerificationStatus();
 
         $this->table(
             ['Component', 'Status'],
@@ -45,6 +52,7 @@ final class ShieldHealthCommand extends Command
                 ['Cache', $cacheStatus],
                 ['Rule engine', 'ok'],
                 ['Trusted proxy', $proxyStatus],
+                ['Crawler verification', $crawlerStatus],
             ],
         );
 
@@ -55,7 +63,55 @@ final class ShieldHealthCommand extends Command
                 .'agar IP klien asli terbaca, bukan IP proxy/load balancer.');
         }
 
+        if ($crawlerWarning !== null) {
+            $this->newLine();
+            $this->warn('Peringatan crawler verification: '.$crawlerWarning);
+        }
+
         return $healthy ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Probes the reverse-DNS path that DnsCrawlerVerifier relies on. Without
+     * this row an app whose resolver cannot do PTR lookups still reports a
+     * healthy Shield while every real crawler is scored as an unverified
+     * claim, which is a silent SEO outage.
+     *
+     * The probe is best effort on purpose: it must never change the exit code,
+     * because DNS availability is an environment property rather than a Shield
+     * defect, and a failing resolver in CI would otherwise fail the suite.
+     *
+     * @return array{0: string, 1: string|null}
+     */
+    private function crawlerVerificationStatus(): array
+    {
+        if (! (bool) config('shield.bots.verification.enabled', true)) {
+            return ['dimatikan (bots.verification.enabled = false)', null];
+        }
+
+        if (! function_exists('gethostbyaddr')) {
+            return [
+                'tidak dapat diuji',
+                'fungsi gethostbyaddr() tidak tersedia, sehingga reverse DNS tidak akan bekerja.',
+            ];
+        }
+
+        $hostname = @gethostbyaddr(self::PROBE_IP);
+        $looksLikeCrawler = is_string($hostname) && $hostname !== self::PROBE_IP
+            && (str_contains(strtolower($hostname), 'googlebot')
+                || str_contains(strtolower($hostname), 'google.com'));
+
+        if ($looksLikeCrawler) {
+            return ['ok (reverse DNS berfungsi)', null];
+        }
+
+        return [
+            'resolver tidak mengembalikan PTR',
+            'reverse DNS untuk IP Googlebot yang dikenal ('.self::PROBE_IP.') tidak menghasilkan hostname yang '
+            .'diharapkan. Jika resolver aplikasi memang tidak punya akses internet, ini normal; tetapi kalau '
+            .'seharusnya ada akses, maka verifikasi crawler akan selalu gagal dan crawler asli akan '
+            .'dianggap sebagai klaim yang belum terverifikasi. Periksa firewall keluar dan konfigurasi DNS.',
+        ];
     }
 
     /**
