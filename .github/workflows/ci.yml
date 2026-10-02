@@ -36,7 +36,7 @@ jobs:
 
       - name: Pin shield-core version (path repo sibling)
         working-directory: shield-core
-        run: composer config version 1.0.0
+        run: composer config version 1.2.1
 
       - name: Point shield-core to sibling checkout
         run: composer config repositories.local-shield-core path shield-core
